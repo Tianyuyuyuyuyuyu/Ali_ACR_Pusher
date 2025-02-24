@@ -111,13 +111,12 @@ jobs:
         echo "- 启用镜像层缓存" >> $GITHUB_STEP_SUMMARY
 
         # 设置 Docker 配置
-        cat > /etc/docker/daemon.json <<EOF
-        {
+        echo '{
             "experimental": true,
             "max-concurrent-downloads": 10,
-            "max-concurrent-uploads": 10
-        }
-        EOF
+            "max-concurrent-uploads": 10,
+            "registry-mirrors": ["https://registry.docker-cn.com"]
+        }' | sudo tee /etc/docker/daemon.json
 
         # 重启 Docker 使配置生效
         sudo systemctl restart docker
@@ -125,6 +124,14 @@ jobs:
         # 设置环境变量
         export DOCKER_BUILDKIT=1
         export DOCKER_CLI_EXPERIMENTAL=enabled
+        
+        # 显示Docker配置确认
+        echo "Debug: 当前Docker配置:"
+        sudo cat /etc/docker/daemon.json
+
+        # 显示Docker信息
+        echo "Debug: Docker信息:"
+        docker info
         
         # 定义重试函数
         retry_command() {
