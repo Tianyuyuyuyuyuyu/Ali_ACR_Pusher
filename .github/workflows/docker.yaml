@@ -369,6 +369,8 @@ jobs:
                     
                     # 清理镜像
                     docker rmi "$image" "$new_image" || true
+                    # 清理临时文件
+                    rm -f /tmp/output.log /tmp/error.log
                 else
                     echo "Debug: 镜像推送失败"
                     ((failed_images++))
