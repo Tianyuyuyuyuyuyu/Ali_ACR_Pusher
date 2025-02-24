@@ -163,31 +163,37 @@ jobs:
             # 如果是推送命令，显示进度
             if [[ $cmd == *"docker push"* ]]; then
                 echo "🔄 开始推送镜像..."
-                # 使用临时文件存储推送输出
-                local push_output_file="/tmp/push_output.txt"
-                # 执行推送命令并处理输出
-                eval "$cmd" 2>&1 | while IFS= read -r line; do
+                # 创建临时文件
+                push_output_file=$(mktemp)
+                
+                # 执行推送命令并保存输出
+                if eval "$cmd" 2>&1 | tee "$push_output_file" | while IFS= read -r line; do
                     # 只处理包含进度信息的行
                     if [[ $line =~ ^[0-9a-f]+:\ (Push|Layer)\ progress:\ ([0-9]+)% ]]; then
                         progress="${BASH_REMATCH[2]}"
-                        # 创建简单的进度显示
                         echo -ne "\r📦 推送进度: ${progress}% "
-                        
-                        # 更新到GitHub Actions摘要
-                        echo "### 🚀 推送进度: ${progress}%" >> $GITHUB_STEP_SUMMARY
                     elif [[ $line =~ digest:\ ([a-zA-Z0-9:]+) ]]; then
-                        # 显示最终的digest信息
                         echo -e "\n✅ 推送完成: ${BASH_REMATCH[1]}"
+                        # 标记推送成功
+                        touch "$status_file"
+                        rm -f "$push_output_file"
+                        return 0
                     fi
                 done
-
-                # 检查推送是否成功
+                
+                # 检查是否成功推送
                 if grep -q "digest: sha" "$push_output_file"; then
                     echo "✅ 镜像推送成功"
+                    # 清理临时文件
+                    rm -f "$push_output_file"
                     # 标记推送成功
                     touch "$status_file"
                     return 0
                 fi
+                
+                # 清理临时文件
+                rm -f "$push_output_file"
+                return 1
             else
               # 普通命令执行
               if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
