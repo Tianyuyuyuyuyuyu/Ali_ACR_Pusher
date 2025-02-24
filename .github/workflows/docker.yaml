@@ -227,7 +227,12 @@ jobs:
             
             # 在增加计数之前添加调试信息
             echo "Debug: 当前总数: $total_images"
-            ((total_images++)) || { echo "Error: 计数器递增失败"; exit 1; }
+            # 修改计数器递增的方式
+            total_images=$((total_images + 1))
+            if [ $? -ne 0 ]; then
+                echo "Error: 计数器递增失败"
+                exit 1
+            fi
             echo "Debug: 更新后总数: $total_images"
             
             # 验证镜像格式解析
