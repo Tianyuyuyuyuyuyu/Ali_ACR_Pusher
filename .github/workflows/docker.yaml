@@ -133,6 +133,34 @@ jobs:
         echo "Debug: Docker信息:"
         docker info
         
+        # 定义检查镜像是否存在的函数
+        check_image_exists() {
+            local image="$1"
+            local registry="$2"
+            local namespace="$3"
+            local repository="$4"
+            local tag="$5"
+            
+            echo "Debug: 检查镜像是否存在: $image"
+            echo "Debug: 仓库信息: $registry/$namespace/$repository:$tag"
+            
+            # 使用阿里云容器镜像服务API检查镜像是否存在
+            local check_result
+            check_result=$(curl -s -X GET \
+                -H "Content-Type: application/json" \
+                -u "${ALIYUN_REGISTRY_USER}:${ALIYUN_REGISTRY_PASSWORD}" \
+                "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}" 2>&1)
+            
+            # 检查响应状态
+            if echo "$check_result" | grep -q "digest"; then
+                echo "Debug: 镜像已存在"
+                return 0
+            else
+                echo "Debug: 镜像不存在"
+                return 1
+            fi
+        }
+
         # 定义重试函数
         retry_command() {
           local cmd="$1"
@@ -150,83 +178,83 @@ jobs:
               local image_name=$(echo "$cmd" | grep -oP 'docker push \K[^ ]+')
               local status_file="/tmp/push_status_${image_name//\//_}.txt"
               
+              # 解析镜像信息
+              local registry=$(echo "$image_name" | cut -d'/' -f1)
+              local namespace=$(echo "$image_name" | cut -d'/' -f2)
+              local repository_tag=$(echo "$image_name" | cut -d'/' -f3)
+              local repository=$(echo "$repository_tag" | cut -d':' -f1)
+              local tag=$(echo "$repository_tag" | cut -d':' -f2)
+              
               # 检查是否已经成功推送
               if [ -f "$status_file" ]; then
-                  echo "Debug: 镜像 $image_name 已经成功推送，跳过"
+                  echo "Debug: 本地状态显示镜像已经成功推送，跳过"
                   return 0
               fi
+              
+              # 检查远程仓库是否存在相同版本
+              if check_image_exists "$image_name" "$registry" "$namespace" "$repository" "$tag"; then
+                  echo "Debug: 远程仓库已存在相同版本镜像，跳过推送"
+                  touch "$status_file"  # 标记为已推送
+                  return 0
+              fi
+              
+              echo "🔄 开始推送镜像..."
+              # 创建临时文件
+              push_output_file=$(mktemp)
+              push_success=false
+              
+              # 执行推送命令并保存输出
+              if eval "$cmd" 2>&1 | tee "$push_output_file" | while IFS= read -r line; do
+                  # 只处理包含进度信息的行
+                  if [[ $line =~ ^[0-9a-f]+:\ (Push|Layer)\ progress:\ ([0-9]+)% ]]; then
+                      progress="${BASH_REMATCH[2]}"
+                      echo -ne "\r📦 推送进度: ${progress}% "
+                  elif [[ $line =~ digest:\ ([a-zA-Z0-9:]+) ]]; then
+                      echo -e "\n✅ 推送完成: ${BASH_REMATCH[1]}"
+                      push_success=true
+                  fi
+              done
+              
+              # 检查是否成功推送
+              if [[ $push_success == true ]] || grep -q "digest: sha" "$push_output_file"; then
+                  echo "✅ 镜像推送成功"
+                  # 标记推送成功
+                  touch "$status_file"
+                  # 清理临时文件
+                  rm -f "$push_output_file"
+                  return 0
+              fi
+              
+              # 清理临时文件
+              rm -f "$push_output_file"
+              return 1
+          else
+              # 普通命令执行
+              if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
+                  echo "Debug: 命令输出:"
+                  cat /tmp/output.log
+                  echo "Debug: 错误输出:"
+                  cat /tmp/error.log
+                  retry_count=$((attempt-1))
+                  return 0
+              else
+                  local exit_code=$?
+                  error_msg=$(cat /tmp/error.log)
+                  echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
+                  echo "Debug: 退出代码: $exit_code"
+                  echo "Debug: 命令输出:"
+                  cat /tmp/output.log
+                  echo "Debug: 错误输出:"
+                  cat /tmp/error.log
+                  if [ $attempt -lt $max_attempts ]; then
+                      echo "等待 ${wait_time} 秒后重试..."
+                      sleep $wait_time
+                      wait_time=$((wait_time * 2))
+                  fi
+                  ((attempt++))
+                  return 1
+              fi
           fi
-          
-          while [ $attempt -le $max_attempts ]; do
-            echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
-            
-            # 如果是推送命令，显示进度
-            if [[ $cmd == *"docker push"* ]]; then
-                echo "🔄 开始推送镜像..."
-                # 创建临时文件
-                push_output_file=$(mktemp)
-                
-                # 执行推送命令并保存输出
-                eval "$cmd" 2>&1 | tee "$push_output_file" | while IFS= read -r line; do
-                    # 只处理包含进度信息的行
-                    if [[ $line =~ ^[0-9a-f]+:\ (Push|Layer)\ progress:\ ([0-9]+)% ]]; then
-                        progress="${BASH_REMATCH[2]}"
-                        echo -ne "\r📦 推送进度: ${progress}% "
-                    elif [[ $line =~ digest:\ ([a-zA-Z0-9:]+) ]]; then
-                        echo -e "\n✅ 推送完成: ${BASH_REMATCH[1]}"
-                        # 标记推送成功
-                        touch "$status_file"
-                        rm -f "$push_output_file"
-                        return 0
-                    fi
-                done
-                
-                # 检查是否成功推送
-                if grep -q "digest: sha" "$push_output_file"; then
-                    echo "✅ 镜像推送成功"
-                    # 清理临时文件
-                    rm -f "$push_output_file"
-                    # 标记推送成功
-                    touch "$status_file"
-                    return 0
-                fi
-                
-                # 清理临时文件
-                rm -f "$push_output_file"
-                return 1
-            else
-                # 普通命令执行
-                if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
-                    echo "Debug: 命令输出:"
-                    cat /tmp/output.log
-                    echo "Debug: 错误输出:"
-                    cat /tmp/error.log
-                    retry_count=$((attempt-1))
-                    return 0
-                else
-                    local exit_code=$?
-                    error_msg=$(cat /tmp/error.log)
-                    echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
-                    echo "Debug: 退出代码: $exit_code"
-                    echo "Debug: 命令输出:"
-                    cat /tmp/output.log
-                    echo "Debug: 错误输出:"
-                    cat /tmp/error.log
-                    if [ $attempt -lt $max_attempts ]; then
-                        echo "等待 ${wait_time} 秒后重试..."
-                        sleep $wait_time
-                        wait_time=$((wait_time * 2))
-                    fi
-                    ((attempt++))
-                    return 1
-                fi
-            fi
-          done
-          
-          retry_count=$((attempt-1))
-          echo "::error::命令执行失败，已达到最大重试次数"
-          echo "最后一次错误信息: $error_msg"
-          return 1
         }
 
         echo "### 🔄 镜像处理进度" >> $GITHUB_STEP_SUMMARY
@@ -325,7 +353,7 @@ jobs:
             name_space=$(echo "$line" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}') || { echo "Error: 解析命名空间失败"; exit 1; }
             echo "Debug: 成功解析命名空间: '$name_space'"
             
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}') || { echo "Error: 解析镜像名失败"; exit 1; }
+            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
             echo "Debug: 成功解析镜像名: $image_name"
             
             echo "Debug: 镜像解析测试完成:"
