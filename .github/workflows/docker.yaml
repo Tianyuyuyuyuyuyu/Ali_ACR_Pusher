@@ -1,0 +1,284 @@
+name: Docker Build Status
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+
+env:
+  ALIYUN_REGISTRY: "${{ secrets.ALIYUN_REGISTRY }}"
+  ALIYUN_NAME_SPACE: "${{ secrets.ALIYUN_NAME_SPACE }}"
+  ALIYUN_REGISTRY_USER: "${{ secrets.ALIYUN_REGISTRY_USER }}"
+  ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+
+jobs:
+
+  build:
+    name: Pull
+    runs-on: ubuntu-latest
+    steps:
+    - name: Start Build Process
+      run: |
+        echo "### 🚀 开始构建流程" >> $GITHUB_STEP_SUMMARY
+        echo "#### ⏰ 构建信息" >> $GITHUB_STEP_SUMMARY
+        echo "- 开始时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+        echo "- 触发事件: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 执行分支: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 构建编号: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+
+    - name: System Info Check
+      run: |
+        echo "### 💻 系统信息" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "操作系统: $(uname -a)" >> $GITHUB_STEP_SUMMARY
+        echo "Docker 版本: $(docker --version)" >> $GITHUB_STEP_SUMMARY
+        echo "磁盘使用情况:" >> $GITHUB_STEP_SUMMARY
+        df -h | grep -v tmpfs >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Before freeing up disk space
+      run: |
+        echo "::group::磁盘空间检查 - 清理前"
+        df -hT
+        echo "::endgroup::"
+
+    # 增加可用磁盘空间
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 128
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        # 如果空间还是不够用，可以把以下开启，清理出更多空间
+        # remove-android: 'true'
+        # remove-codeql: 'true'
+        build-mount-path: '/var/lib/docker/'
+
+    - name: After Space Cleanup
+      run: |
+        echo "### 💾 磁盘空间优化" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "清理后可用空间:" >> $GITHUB_STEP_SUMMARY
+        df -h | grep -v tmpfs >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Restart docker
+      run: sudo service docker restart
+
+    - name: Free up disk space complete
+      run: |
+        echo "Free up disk space complete"
+        echo "=============================================================================="
+        df -hT
+        echo "=============================================================================="
+
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Docker Setup Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push image Aliyun
+      id: build_push
+      run: |
+        # 定义重试函数
+        retry_command() {
+          local cmd="$1"
+          local max_attempts=3
+          local attempt=1
+          local wait_time=10
+          local error_msg=""
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
+            if eval "$cmd" 2> >(error_msg=$(cat)); then
+              return 0
+            else
+              echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
+              echo "错误信息: $error_msg"
+              if [ $attempt -lt $max_attempts ]; then
+                echo "等待 ${wait_time} 秒后重试..."
+                sleep $wait_time
+                wait_time=$((wait_time * 2))
+              fi
+              ((attempt++))
+            fi
+          done
+          
+          echo "::error::命令执行失败，已达到最大重试次数"
+          echo "最后一次错误信息: $error_msg"
+          return 1
+        }
+
+        echo "### 🔄 镜像处理进度" >> $GITHUB_STEP_SUMMARY
+        echo "#### 登录状态" >> $GITHUB_STEP_SUMMARY
+        
+        # 使用重试函数进行登录
+        if retry_command "docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY"; then
+          echo "✅ 阿里云容器镜像服务登录成功" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ 阿里云容器镜像服务登录失败" >> $GITHUB_STEP_SUMMARY
+          echo "ERROR_INFO<<EOF" >> $GITHUB_ENV
+          echo "登录失败，请检查凭据是否正确。" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          exit 1
+        fi
+        
+        # 初始化错误信息收集
+        errors=()
+        
+        # 初始化计数器
+        total_images=0
+        processed_images=0
+        failed_images=0
+        
+        # 计算总镜像数
+        while IFS= read -r line || [ -n "$line" ]; do
+          if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
+            ((total_images++))
+          fi
+        done < images.txt
+        
+        echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
+        echo "- 待处理镜像总数: ${total_images}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "#### 🔍 镜像处理详情" >> $GITHUB_STEP_SUMMARY
+        echo "| 序号 | 源镜像 | 目标镜像 | 状态 | 耗时 | 重试次数 |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|--------|-----------|------|------|-----------|" >> $GITHUB_STEP_SUMMARY
+        
+        while IFS= read -r line || [ -n "$line" ]; do
+          if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
+            ((processed_images++))
+            start_time=$(date +%s)
+            
+            image=$(echo "$line" | awk '{print $NF}')
+            image="${image%%@*}"
+            
+            echo "::group::处理镜像 ($processed_images/$total_images): $image"
+            
+            # 使用重试函数拉取镜像
+            if retry_command "docker pull $line"; then
+              platform=$(echo "$line" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
+              platform_prefix="${platform//\//_}_"
+              new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$platform_prefix$image"
+              
+              # 使用重试函数标记和推送镜像
+              if retry_command "docker tag $image $new_image && docker push $new_image"; then
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ✅ | ${duration}s | $((attempt-1)) |" >> $GITHUB_STEP_SUMMARY
+              else
+                ((failed_images++))
+                error_msg="标记或推送镜像失败"
+                errors+=("镜像 $image: $error_msg")
+                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ❌ | - | $((attempt-1)) |" >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              ((failed_images++))
+              error_msg="拉取镜像失败"
+              errors+=("镜像 $image: $error_msg")
+              echo "| ${processed_images}/${total_images} | \`${image}\` | - | ❌ | - | $((attempt-1)) |" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            echo "::endgroup::"
+            
+            # 清理镜像
+            docker rmi $image $new_image 2>/dev/null || true
+          fi
+        done < images.txt
+        
+        # 更新最终统计
+        success_rate=$(( (total_images - failed_images) * 100 / total_images ))
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "#### 📈 最终统计" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ 成功处理: $((total_images - failed_images)) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- ❌ 处理失败: ${failed_images} 个" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 成功率: ${success_rate}%" >> $GITHUB_STEP_SUMMARY
+        
+        # 如果有错误，记录到环境变量中
+        if [ ${#errors[@]} -gt 0 ]; then
+          echo "ERROR_INFO<<EOF" >> $GITHUB_ENV
+          echo "处理过程中出现以下错误：" >> $GITHUB_ENV
+          printf '%s\n' "${errors[@]}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+        fi
+
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "### 📋 构建完成报告" >> $GITHUB_STEP_SUMMARY
+        echo "#### ⏰ 时间信息" >> $GITHUB_STEP_SUMMARY
+        echo "- 开始时间: ${{ steps.start_time.outputs.time }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 结束时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+        echo "- 总耗时: $(($(date +%s) - ${{ steps.start_time.outputs.timestamp }}))s" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "#### 🔗 相关链接" >> $GITHUB_STEP_SUMMARY
+        echo "- [查看完整构建日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+        echo "- [查看代码变更](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+
+    # 添加邮件通知功能
+    - name: Send Notification
+      if: always()
+      uses: dawidd6/action-send-mail@v3
+      env:
+        IMAGES_INFO: ""
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.GMAIL_USERNAME }}
+        password: ${{ secrets.GMAIL_PASSWORD }}
+        subject: 'Ali_ACR_Pusher 构建通知'
+        html_body: |
+          <h2>🔔 构建通知</h2>
+          
+          <h3>📊 构建状态</h3>
+          ${{ job.status == 'success' && '✅ 构建成功' || '❌ 构建失败' }}
+          
+          <h3>📋 详细信息</h3>
+          <ul>
+            <li>🏢 仓库：${{ github.repository }}</li>
+            <li>🔄 触发事件：${{ github.event_name }}</li>
+            <li>📝 提交信息：${{ github.event.head_commit.message }}</li>
+            <li>👤 提交者：${{ github.actor }}</li>
+            <li>⏰ 构建时间：${{ steps.date.outputs.date }}</li>
+            <li>📈 成功率：${{ env.success_rate }}%</li>
+          </ul>
+
+          <h3>🐳 推送镜像信息</h3>
+          <pre>${{ env.IMAGES_INFO }}</pre>
+          
+          ${{ env.ERROR_INFO && '<h3>❌ 错误信息</h3><pre style="color: #ff0000;">' || '' }}
+          ${{ env.ERROR_INFO }}
+          ${{ env.ERROR_INFO && '</pre>' || '' }}
+          
+          <hr>
+          <p>📌 更多详细信息请查看 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">构建日志</a></p>
+          
+          <p style="color: #666; font-size: 12px;">
+            此邮件由 GitHub Actions 自动发送，请勿直接回复。
+          </p>
+        to: ${{ secrets.GMAIL_USERNAME }}
+        from: ${{ secrets.GMAIL_USERNAME }}
+
+    # 添加获取当前时间的步骤
+    - name: Get current time
+      id: date
+      run: echo "date=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+
+    # 收集推送的镜像信息
+    - name: Collect Images Info
+      if: always()
+      run: |
+        echo "IMAGES_INFO<<EOF" >> $GITHUB_ENV
+        echo "推送的镜像列表：" >> $GITHUB_ENV
+        while IFS= read -r line || [ -n "$line" ]; do
+          if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
+            image=$(echo "$line" | awk '{print $NF}')
+            image="${image%%@*}"
+            echo "✓ $image" >> $GITHUB_ENV
+          fi
+        done < images.txt
+        echo "EOF" >> $GITHUB_ENV
