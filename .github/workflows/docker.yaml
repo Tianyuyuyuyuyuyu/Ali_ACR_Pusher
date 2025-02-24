@@ -144,43 +144,37 @@ jobs:
           
           echo "Debug: 执行命令: $cmd"
           
+          # 检查是否是推送命令
+          if [[ $cmd == *"docker push"* ]]; then
+              # 提取镜像名称用于状态跟踪
+              local image_name=$(echo "$cmd" | grep -oP 'docker push \K[^ ]+')
+              local status_file="/tmp/push_status_${image_name//\//_}.txt"
+              
+              # 检查是否已经成功推送
+              if [ -f "$status_file" ]; then
+                  echo "Debug: 镜像 $image_name 已经成功推送，跳过"
+                  return 0
+              fi
+          fi
+          
           while [ $attempt -le $max_attempts ]; do
             echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
             
             # 如果是推送命令，显示进度
             if [[ $cmd == *"docker push"* ]]; then
                 echo "🔄 开始推送镜像..."
-                # 使用管道显示进度
-                eval "$cmd 2>&1" | while IFS= read -r line; do
-                    # 显示每一行输出
-                    echo "$line"
-                    
-                    # 解析进度信息
-                    if [[ $line =~ ^[0-9a-f]+:\ Push\ progress:\ ([0-9]+)% ]]; then
-                        progress="${BASH_REMATCH[1]}"
-                        # 创建进度条
-                        bar=""
-                        bar_size=50
-                        filled=$((progress * bar_size / 100))
-                        empty=$((bar_size - filled))
-                        
-                        # 构建进度条
-                        for ((i=0; i<filled; i++)); do bar+="█"; done
-                        for ((i=0; i<empty; i++)); do bar+="░"; done
-                        
-                        # 清除当前行并显示进度
-                        echo -ne "\r📦 推送进度: [${bar}] ${progress}%"
-                        
-                        # 更新到GitHub Actions摘要
-                        {
-                            echo "### 🚀 当前推送进度" >> $GITHUB_STEP_SUMMARY
-                            echo "![Progress](https://progress-bar.dev/${progress}/?width=500)" >> $GITHUB_STEP_SUMMARY
-                            echo "- 已完成: ${progress}%" >> $GITHUB_STEP_SUMMARY
-                            echo "- 当前层: ${line%%:*}" >> $GITHUB_STEP_SUMMARY
-                        }
+                # 使用临时文件存储推送输出
+                local push_output_file="/tmp/push_output.txt"
+                # 执行推送命令并保存输出
+                if eval "$cmd" 2>&1 | tee "$push_output_file"; then
+                    # 检查是否成功推送
+                    if grep -q "Layer already exists" "$push_output_file" && grep -q "digest: sha" "$push_output_file"; then
+                        echo "✅ 镜像推送成功"
+                        # 标记推送成功
+                        touch "$status_file"
+                        return 0
                     fi
-                done
-                echo # 添加换行
+                fi
             else
               # 普通命令执行
               if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
@@ -248,6 +242,9 @@ jobs:
         # 初始化镜像信息收集数组
         declare -a successful_images=()
         declare -a failed_images_info=()
+        
+        # 创建临时目录用于状态跟踪
+        mkdir -p /tmp/docker_push_status
         
         # 检查文件是否存在
         if [ ! -f "images.txt" ]; then
