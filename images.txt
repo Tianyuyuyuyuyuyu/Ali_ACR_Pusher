@@ -1,8 +1,8 @@
 # Jenkins 基础镜像 - LTS 版本，包含 JDK 11
 jenkins/jenkins:2.426.1-lts-jdk11
 
-# Unity 构建环境 - 2023.2.9f1 版本
-unityci/editor:ubuntu-2023.2.9f1-linux-il2cpp-2.0
+# Unity 构建环境 - Unity CI Android构建镜像
+unityci/editor:windows-6000.0.39f1-android-3.1.0
 
 # Docker-in-Docker - 用于在 Jenkins 中运行 Docker 命令
 docker:24.0.7-dind
