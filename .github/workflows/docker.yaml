@@ -164,8 +164,8 @@ jobs:
           log_progress "处理镜像" "开始处理: $line"
           # 忽略空行与注释
           [[ -z "$line" ]] && continue
-          if echo "$line" | grep -q '^\\s*#'; then
-              continue
+          if [[ "$line" =~ ^[[:space:]]*# ]]; then
+            continue
           fi
 
           # 使用子shell处理每个镜像，避免单个失败影响整体
