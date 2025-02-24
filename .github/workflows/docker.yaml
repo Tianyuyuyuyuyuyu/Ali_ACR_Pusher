@@ -478,15 +478,15 @@ jobs:
             echo "Debug: 开始处理第 $current_count/$total_images 个镜像"
             
             # 解析镜像信息
-            local image="$line"
+            image="$line"
             image="${image%%@*}"
-            local image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            local name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            local image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-            local tag=$(echo "$image_name_tag" | awk -F':' '{print $2}')
+            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
+            tag=$(echo "$image_name_tag" | awk -F':' '{print $2}')
             
             # 构建目标镜像名称
-            local new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
+            new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
             
             echo "Debug: 处理镜像: $line"
             echo "Debug: 目标镜像: $new_image"
