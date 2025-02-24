@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ master ]
+  schedule:
+    - cron: '0 1 * * *'  # 每天凌晨 1 点执行
 
 
 env:
@@ -80,6 +82,13 @@ jobs:
     - name: Docker Setup Buildx
       uses: docker/setup-buildx-action@v3
 
+    # 记录开始时间
+    - name: Set start time
+      id: start_time
+      run: |
+        echo "time=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+        echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+
     - name: Build and push image Aliyun
       id: build_push
       run: |
@@ -90,10 +99,12 @@ jobs:
           local attempt=1
           local wait_time=10
           local error_msg=""
+          local retry_count=0
           
           while [ $attempt -le $max_attempts ]; do
             echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
             if eval "$cmd" 2> >(error_msg=$(cat)); then
+              retry_count=$((attempt-1))
               return 0
             else
               echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
@@ -107,6 +118,7 @@ jobs:
             fi
           done
           
+          retry_count=$((attempt-1))
           echo "::error::命令执行失败，已达到最大重试次数"
           echo "最后一次错误信息: $error_msg"
           return 1
@@ -129,10 +141,15 @@ jobs:
         # 初始化错误信息收集
         errors=()
         
-        # 初始化计数器
+        # 初始化镜像信息收集数组
+        declare -a successful_images=()
+        declare -a failed_images_info=()
+        
+        # 初始化计数器和开始时间
         total_images=0
         processed_images=0
         failed_images=0
+        build_start_time=$(date +%s)
         
         # 计算总镜像数
         while IFS= read -r line || [ -n "$line" ]; do
@@ -140,6 +157,9 @@ jobs:
             ((total_images++))
           fi
         done < images.txt
+        
+        # 导出构建开始时间到环境变量
+        echo "build_start_time=${build_start_time}" >> $GITHUB_ENV
         
         echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
         echo "- 待处理镜像总数: ${total_images}" >> $GITHUB_STEP_SUMMARY
@@ -163,18 +183,44 @@ jobs:
             if retry_command "docker pull $line"; then
               platform=$(echo "$line" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
               platform_prefix="${platform//\//_}_"
-              new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$platform_prefix$image"
+              
+              # 获取镜像的完整名称，例如kasmweb/nginx:1.25.3（命名空间/镜像名:版本号）
+              image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+              # 获取命名空间 例如kasmweb  这里有种特殊情况 docker.io/nginx，把docker.io当成命名空间，也OK
+              name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+              # 获取镜像名例如nginx
+              image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
+              
+              name_space_prefix=""
+              # 如果命名空间非空，将命名空间加到前缀
+              if [[ -n "${name_space}" ]]; then
+                name_space_prefix="${name_space}_"
+              fi
+              
+              # 将@sha256:等字符删除
+              image_name_tag="${image_name_tag%%@*}"
+              new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$platform_prefix$name_space_prefix$image_name_tag"
+              
+              # 计算成功率时添加错误处理
+              if [ $total_images -gt 0 ]; then
+                success_rate=$(( (total_images - failed_images) * 100 / total_images ))
+              else
+                success_rate=0
+              fi
               
               # 使用重试函数标记和推送镜像
               if retry_command "docker tag $image $new_image && docker push $new_image"; then
+                retry_count=$retry_count
                 end_time=$(date +%s)
                 duration=$((end_time - start_time))
-                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ✅ | ${duration}s | $((attempt-1)) |" >> $GITHUB_STEP_SUMMARY
+                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ✅ | ${duration}s | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
+                successful_images+=("✅ $new_image (耗时: ${duration}s, 重试: ${retry_count}次)")
               else
-                ((failed_images++))
+                retry_count=$retry_count
                 error_msg="标记或推送镜像失败"
                 errors+=("镜像 $image: $error_msg")
-                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ❌ | - | $((attempt-1)) |" >> $GITHUB_STEP_SUMMARY
+                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ❌ | - | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
+                failed_images_info+=("❌ $image -> $new_image (失败原因: $error_msg, 重试: ${retry_count}次)")
               fi
             else
               ((failed_images++))
@@ -191,12 +237,30 @@ jobs:
         done < images.txt
         
         # 更新最终统计
-        success_rate=$(( (total_images - failed_images) * 100 / total_images ))
+        build_end_time=$(date +%s)
+        total_duration=$((build_end_time - build_start_time))
+        
+        # 计算成功率（避免除零错误）
+        if [ $total_images -gt 0 ]; then
+          success_rate=$(( (total_images - failed_images) * 100 / total_images ))
+        else
+          success_rate=0
+        fi
+        
+        # 导出统计信息到环境变量
+        {
+          echo "success_rate=${success_rate}" >> $GITHUB_ENV
+          echo "total_duration=${total_duration}" >> $GITHUB_ENV
+          echo "total_images=${total_images}" >> $GITHUB_ENV
+          echo "failed_images=${failed_images}" >> $GITHUB_ENV
+        }
+        
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 📈 最终统计" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ 成功处理: $((total_images - failed_images)) 个" >> $GITHUB_STEP_SUMMARY
         echo "- ❌ 处理失败: ${failed_images} 个" >> $GITHUB_STEP_SUMMARY
         echo "- 📊 成功率: ${success_rate}%" >> $GITHUB_STEP_SUMMARY
+        echo "- ⏱️ 总耗时: ${total_duration} 秒" >> $GITHUB_STEP_SUMMARY
         
         # 如果有错误，记录到环境变量中
         if [ ${#errors[@]} -gt 0 ]; then
@@ -211,9 +275,15 @@ jobs:
       run: |
         echo "### 📋 构建完成报告" >> $GITHUB_STEP_SUMMARY
         echo "#### ⏰ 时间信息" >> $GITHUB_STEP_SUMMARY
-        echo "- 开始时间: ${{ steps.start_time.outputs.time }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 开始时间: $(date -d @${{ env.build_start_time }} '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
         echo "- 结束时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
-        echo "- 总耗时: $(($(date +%s) - ${{ steps.start_time.outputs.timestamp }}))s" >> $GITHUB_STEP_SUMMARY
+        echo "- 总耗时: ${{ env.total_duration }} 秒" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
+        echo "- 总镜像数: ${{ env.total_images }} 个" >> $GITHUB_STEP_SUMMARY
+        echo "- 成功数量: $((${{ env.total_images }} - ${{ env.failed_images }})) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- 失败数量: ${{ env.failed_images }} 个" >> $GITHUB_STEP_SUMMARY
+        echo "- 成功率: ${{ env.success_rate }}%" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 🔗 相关链接" >> $GITHUB_STEP_SUMMARY
         echo "- [查看完整构建日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
@@ -223,14 +293,14 @@ jobs:
     - name: Send Notification
       if: always()
       uses: dawidd6/action-send-mail@v3
-      env:
-        IMAGES_INFO: ""
       with:
         server_address: smtp.gmail.com
         server_port: 587
         username: ${{ secrets.GMAIL_USERNAME }}
         password: ${{ secrets.GMAIL_PASSWORD }}
         subject: 'Ali_ACR_Pusher 构建通知'
+        to: ${{ secrets.GMAIL_USERNAME }}
+        from: ${{ secrets.GMAIL_USERNAME }}
         html_body: |
           <h2>🔔 构建通知</h2>
           
@@ -243,25 +313,27 @@ jobs:
             <li>🔄 触发事件：${{ github.event_name }}</li>
             <li>📝 提交信息：${{ github.event.head_commit.message }}</li>
             <li>👤 提交者：${{ github.actor }}</li>
-            <li>⏰ 构建时间：${{ steps.date.outputs.date }}</li>
+            <li>⏰ 开始时间：$(date -d @${{ env.build_start_time }} '+%Y-%m-%d %H:%M:%S')</li>
+            <li>⌛ 总耗时：${{ env.total_duration }} 秒</li>
             <li>📈 成功率：${{ env.success_rate }}%</li>
           </ul>
 
-          <h3>🐳 推送镜像信息</h3>
-          <pre>${{ env.IMAGES_INFO }}</pre>
+          <h3>📊 处理统计</h3>
+          <ul>
+            <li>总镜像数：${{ env.total_images }} 个</li>
+            <li>成功处理：$((${{ env.total_images }} - ${{ env.failed_images }})) 个</li>
+            <li>处理失败：${{ env.failed_images }} 个</li>
+          </ul>
+
+          <h3>🐳 镜像处理结果</h3>
+          <pre style="background-color: #f6f8fa; padding: 10px; border-radius: 5px;">${{ env.IMAGES_INFO }}</pre>
           
-          ${{ env.ERROR_INFO && '<h3>❌ 错误信息</h3><pre style="color: #ff0000;">' || '' }}
-          ${{ env.ERROR_INFO }}
-          ${{ env.ERROR_INFO && '</pre>' || '' }}
+          ${{ env.ERROR_INFO && '<h3>❌ 错误信息</h3><pre style="color: #ff0000; background-color: #ffebeb; padding: 10px; border-radius: 5px;">' || '' }}${{ env.ERROR_INFO }}${{ env.ERROR_INFO && '</pre>' || '' }}
           
           <hr>
           <p>📌 更多详细信息请查看 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">构建日志</a></p>
           
-          <p style="color: #666; font-size: 12px;">
-            此邮件由 GitHub Actions 自动发送，请勿直接回复。
-          </p>
-        to: ${{ secrets.GMAIL_USERNAME }}
-        from: ${{ secrets.GMAIL_USERNAME }}
+          <p style="color: #666; font-size: 12px;">此邮件由 GitHub Actions 自动发送，请勿直接回复。</p>
 
     # 添加获取当前时间的步骤
     - name: Get current time
