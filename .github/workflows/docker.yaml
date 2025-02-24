@@ -1,4 +1,4 @@
-name: Docker Build Status
+name: Pusher
 
 on:
   workflow_dispatch:
