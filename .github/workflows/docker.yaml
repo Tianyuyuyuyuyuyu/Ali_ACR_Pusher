@@ -368,9 +368,28 @@ jobs:
                     successful_images+=("✅ $new_image (耗时: ${duration}s)")
                     
                     # 清理镜像
-                    docker rmi "$image" "$new_image" || true
+                    {
+                        echo "Debug: 开始清理镜像"
+                        if docker rmi "$image" 2>/dev/null; then
+                            echo "Debug: 成功清理源镜像: $image"
+                        else
+                            echo "Debug: 清理源镜像失败（忽略）: $image"
+                        fi
+                        
+                        if docker rmi "$new_image" 2>/dev/null; then
+                            echo "Debug: 成功清理目标镜像: $new_image"
+                        else
+                            echo "Debug: 清理目标镜像失败（忽略）: $new_image"
+                        fi
+                        echo "Debug: 镜像清理完成"
+                    }
+                    
                     # 清理临时文件
-                    rm -f /tmp/output.log /tmp/error.log
+                    {
+                        echo "Debug: 开始清理临时文件"
+                        rm -f /tmp/output.log /tmp/error.log
+                        echo "Debug: 临时文件清理完成"
+                    }
                 else
                     echo "Debug: 镜像推送失败"
                     ((failed_images++))
