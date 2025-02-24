@@ -181,11 +181,19 @@ jobs:
               new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
             fi
 
+            # 添加调试信息
+            echo "Debug: 处理镜像信息"
+            echo "- 原始行: $line"
+            echo "- 镜像名称: $image_name_tag"
+            echo "- 标签: $tag"
+            echo "- 目标镜像: $new_image"
+
             # 直接拉取镜像
             if retry_command "docker pull $line"; then
               echo "Debug: 镜像拉取成功: $line"
 
-              if retry_command "docker tag $image $new_image && docker push $new_image"; then
+              # 使用 line 作为源镜像
+              if retry_command "docker tag \"$line\" \"$new_image\" && docker push \"$new_image\""; then
                 end_time=$(date +%s)
                 duration=$((end_time - start_time))
                 echo "Debug: 成功推送镜像: $new_image (耗时: ${duration}s)"
@@ -193,7 +201,7 @@ jobs:
               else
                 echo "Debug: 镜像推送失败"
                 ((failed_images++))
-                echo "::warning::推送失败: $image -> $new_image"
+                echo "::warning::推送失败: $line -> $new_image"
               fi
             else
               echo "Debug: 镜像拉取失败"
