@@ -14,7 +14,7 @@ prom/prometheus:v2.49.1
 grafana/grafana:10.3.3
 
 # 测试环境
-# NUnit - .NET 测试框架
-nunit/nunit:3.16.3
-# .NET SDK - .NET 开发和运行环境
-mcr.microsoft.com/dotnet/sdk:8.0
+# .NET SDK - 用于运行测试和构建
+mcr.microsoft.com/dotnet/sdk:8.0-jammy
+# NUnit Console Runner - 用于执行测试
+mcr.microsoft.com/dotnet/runtime:8.0-jammy

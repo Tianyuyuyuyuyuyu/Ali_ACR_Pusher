@@ -577,7 +577,7 @@ jobs:
         
         # 计算成功率
         if [ $total_images -gt 0 ]; then
-          success_rate=$(( (total_images - failed_images) * 100 / total_images ))
+          success_rate=$(( (processed_images - failed_images) * 100 / total_images ))
         else
           success_rate=0
         fi
@@ -588,11 +588,12 @@ jobs:
           echo "total_duration=${total_duration}" >> $GITHUB_ENV
           echo "processed_images=${processed_images}" >> $GITHUB_ENV
           echo "failed_images=${failed_images}" >> $GITHUB_ENV
+          echo "total_images=${total_images}" >> $GITHUB_ENV
         }
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 📈 最终统计" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ 成功处理: $((total_images - failed_images)) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ 成功处理: $((processed_images - failed_images)) 个" >> $GITHUB_STEP_SUMMARY
         echo "- ❌ 处理失败: ${failed_images} 个" >> $GITHUB_STEP_SUMMARY
         echo "- 📊 成功率: ${success_rate}%" >> $GITHUB_STEP_SUMMARY
         echo "- ⏱️ 总耗时: ${total_duration} 秒" >> $GITHUB_STEP_SUMMARY
