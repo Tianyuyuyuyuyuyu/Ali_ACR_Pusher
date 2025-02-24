@@ -1,3 +1,6 @@
+# Docker-in-Docker - 用于在 Jenkins 中运行 Docker 命令
+docker:24.0.7-dind
+
 # Node.js - 轻量级 Alpine 版本，用于前端构建任务
 node:20.11.1-alpine
 
@@ -9,3 +12,9 @@ sonarqube:9.9.4-community
 prom/prometheus:v2.49.1
 # Grafana - 监控数据可视化
 grafana/grafana:10.3.3
+
+# 测试环境
+# .NET SDK - 用于运行测试和构建
+mcr.microsoft.com/dotnet/sdk:8.0-jammy
+# NUnit Console Runner - 用于执行测试
+mcr.microsoft.com/dotnet/runtime:8.0-jammy
