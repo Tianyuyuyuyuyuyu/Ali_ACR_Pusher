@@ -148,15 +148,21 @@ jobs:
             local check_result
             check_result=$(curl -s -X GET \
                 -H "Content-Type: application/json" \
-                -u "${ALIYUN_REGISTRY_USER}:${ALIYUN_REGISTRY_PASSWORD}" \
-                "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}" 2>&1)
+                -H "Authorization: Basic $(echo -n "${ALIYUN_REGISTRY_USER}:${ALIYUN_REGISTRY_PASSWORD}" | base64)" \
+                "https://${registry}/v2/${ALIYUN_NAME_SPACE}/${repository}/manifests/${tag}" 2>&1)
             
-            # 检查响应状态
+            # 检查响应状态和内容
             if echo "$check_result" | grep -q "digest"; then
-                echo "Debug: 镜像已存在"
+                echo "Debug: 镜像已存在，跳过推送"
+                echo "Debug: API响应: $check_result"
                 return 0
+            elif echo "$check_result" | grep -q "MANIFEST_UNKNOWN"; then
+                echo "Debug: 镜像不存在，需要推送"
+                echo "Debug: API响应: $check_result"
+                return 1
             else
-                echo "Debug: 镜像不存在"
+                echo "Debug: 检查失败，继续推送"
+                echo "Debug: API响应: $check_result"
                 return 1
             fi
         }
