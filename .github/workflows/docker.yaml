@@ -213,16 +213,16 @@ jobs:
                       echo -e "\n✅ 推送完成: ${BASH_REMATCH[1]}"
                       push_success=true
                   fi
-              done
-              
-              # 检查是否成功推送
-              if [[ $push_success == true ]] || grep -q "digest: sha" "$push_output_file"; then
-                  echo "✅ 镜像推送成功"
-                  # 标记推送成功
-                  touch "$status_file"
-                  # 清理临时文件
-                  rm -f "$push_output_file"
-                  return 0
+              done; then
+                  # 检查是否成功推送
+                  if [[ $push_success == true ]] || grep -q "digest: sha" "$push_output_file"; then
+                      echo "✅ 镜像推送成功"
+                      # 标记推送成功
+                      touch "$status_file"
+                      # 清理临时文件
+                      rm -f "$push_output_file"
+                      return 0
+                  fi
               fi
               
               # 清理临时文件
