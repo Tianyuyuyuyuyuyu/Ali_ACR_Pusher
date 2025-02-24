@@ -92,14 +92,19 @@ jobs:
     - name: Build and push image Aliyun
       id: build_push
       run: |
+        # 初始化时间变量
+        build_start_time=$(date +%s)
+        processed_images=0
+        failed_images=0
+        
         # 添加调试信息
         echo "Debug: 显示 images.txt 内容"
         cat images.txt
         echo "Debug: 显示文件编码"
         file images.txt
         
-        # 确保文件使用 Unix 换行符
-        dos2unix images.txt || true
+        # 使用 sed 处理换行符而不是 dos2unix
+        sed -i 's/\r$//' images.txt
         
         # 定义重试函数
         retry_command() {
@@ -286,21 +291,29 @@ jobs:
     - name: Build Summary
       if: always()
       run: |
-        echo "### 📋 构建完成报告" >> $GITHUB_STEP_SUMMARY
-        echo "#### ⏰ 时间信息" >> $GITHUB_STEP_SUMMARY
-        echo "- 开始时间: $(date -d @${{ env.build_start_time }} '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
-        echo "- 结束时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
-        echo "- 总耗时: ${{ env.total_duration }} 秒" >> $GITHUB_STEP_SUMMARY
+        if [ -n "${{ env.build_start_time }}" ]; then
+          start_time="${{ env.build_start_time }}"
+          echo "### 📋 构建完成报告" >> $GITHUB_STEP_SUMMARY
+          echo "#### ⏰ 时间信息" >> $GITHUB_STEP_SUMMARY
+          echo "- 开始时间: $(date -d "@$start_time" '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+          echo "- 结束时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+          echo "- 总耗时: ${{ env.total_duration }} 秒" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### 📋 构建完成报告" >> $GITHUB_STEP_SUMMARY
+          echo "#### ⚠️ 构建过程中断" >> $GITHUB_STEP_SUMMARY
+          echo "构建过程未正常完成，无法获取完整的时间信息。" >> $GITHUB_STEP_SUMMARY
+        fi
+        
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
-        echo "- 总镜像数: ${{ env.total_images }} 个" >> $GITHUB_STEP_SUMMARY
-        echo "- 成功数量: $((${{ env.total_images }} - ${{ env.failed_images }})) 个" >> $GITHUB_STEP_SUMMARY
-        echo "- 失败数量: ${{ env.failed_images }} 个" >> $GITHUB_STEP_SUMMARY
-        echo "- 成功率: ${{ env.success_rate }}%" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "#### 🔗 相关链接" >> $GITHUB_STEP_SUMMARY
-        echo "- [查看完整构建日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-        echo "- [查看代码变更](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+        if [ -n "${{ env.total_images }}" ]; then
+          echo "- 总镜像数: ${{ env.total_images }} 个" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功数量: $((${{ env.total_images }} - ${{ env.failed_images }})) 个" >> $GITHUB_STEP_SUMMARY
+          echo "- 失败数量: ${{ env.failed_images }} 个" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功率: ${{ env.success_rate }}%" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- ⚠️ 无可用统计信息" >> $GITHUB_STEP_SUMMARY
+        fi
 
     # 添加邮件通知功能
     - name: Send Notification
