@@ -133,472 +133,47 @@ jobs:
         echo "Debug: Docker信息:"
         docker info
         
-        # 定义检查镜像是否存在的函数
-        check_image_exists() {
-            local image="$1"
-            local registry="$2"
-            local namespace="$3"
-            local repository="$4"
-            local tag="$5"
-            
-            echo "Debug: 检查镜像是否存在: $image"
-            echo "Debug: 仓库信息: $registry/$namespace/$repository:$tag"
-            
-            # 构建认证字符串
-            local auth_str="${ALIYUN_REGISTRY_USER}:${ALIYUN_REGISTRY_PASSWORD}"
-            local auth_header="Basic $(echo -n "$auth_str" | base64 -w 0)"
-            
-            # 使用阿里云容器镜像服务API检查镜像是否存在
-            local check_result
-            check_result=$(curl -s -X GET \
-                -H "Content-Type: application/json" \
-                -H "Authorization: $auth_header" \
-                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}")
-            
-            echo "Debug: API响应: $check_result"
-            
-            # 检查响应状态和内容
-            if echo "$check_result" | grep -q "schemaVersion"; then
-                echo "Debug: 镜像已存在，跳过处理"
-                return 0
-            elif echo "$check_result" | grep -q "MANIFEST_UNKNOWN"; then
-                echo "Debug: 镜像不存在，需要处理"
-                return 1
-            elif echo "$check_result" | grep -q "UNAUTHORIZED"; then
-                echo "Debug: 认证失败，重试登录"
-                if docker login -u "$ALIYUN_REGISTRY_USER" -p "$ALIYUN_REGISTRY_PASSWORD" "$registry"; then
-                    echo "Debug: 重新登录成功，重试检查"
-                    check_result=$(curl -s -X GET \
-                        -H "Content-Type: application/json" \
-                        -H "Authorization: $auth_header" \
-                        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                        "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}")
-                    if echo "$check_result" | grep -q "schemaVersion"; then
-                        echo "Debug: 重试后确认镜像存在"
-                        return 0
-                    fi
-                fi
-                echo "Debug: 认证问题未解决，继续处理"
-                return 1
-            else
-                echo "Debug: 检查失败，继续处理"
-                return 1
+        # 处理镜像的主逻辑
+        while IFS= read -r line || [ -n "$line" ]; do
+            # 忽略空行与注释
+            [[ -z "$line" ]] && continue
+            if echo "$line" | grep -q '^\\s*#'; then
+                continue
             fi
-        }
 
-        # 定义重试函数
-        retry_command() {
-          local cmd="$1"
-          local max_attempts=3
-          local attempt=1
-          local wait_time=10
-          local error_msg=""
-          local retry_count=0
-          
-          echo "Debug: 执行命令: $cmd"
-          
-          # 检查是否是推送命令
-          if [[ $cmd == *"docker push"* ]]; then
-              # 提取镜像名称用于状态跟踪
-              local image_name=$(echo "$cmd" | grep -oP 'docker push \K[^ ]+')
-              local status_file="/tmp/push_status_${image_name//\//_}.txt"
-              
-              # 解析镜像信息
-              local registry=$(echo "$image_name" | cut -d'/' -f1)
-              local namespace=$(echo "$image_name" | cut -d'/' -f2)
-              local repository_tag=$(echo "$image_name" | cut -d'/' -f3)
-              local repository=$(echo "$repository_tag" | cut -d':' -f1)
-              local tag=$(echo "$repository_tag" | cut -d':' -f2)
-              
-              # 检查是否已经成功推送
-              if [ -f "$status_file" ]; then
-                  echo "Debug: 本地状态显示镜像已经成功推送，跳过"
-                  return 0
-              fi
-              
-              # 检查远程仓库是否存在相同版本
-              if check_image_exists "$image_name" "$registry" "$namespace" "$repository" "$tag"; then
-                  echo "Debug: 远程仓库已存在相同版本镜像，跳过推送"
-                  touch "$status_file"  # 标记为已推送
-                  return 0
-              fi
-              
-              echo "🔄 开始推送镜像..."
-              # 创建临时文件
-              push_output_file=$(mktemp)
-              push_success=false
-              
-              # 执行推送命令并保存输出
-              if eval "$cmd" 2>&1 | tee "$push_output_file" | while IFS= read -r line; do
-                  # 只处理包含进度信息的行
-                  if [[ $line =~ ^[0-9a-f]+:\ (Push|Layer)\ progress:\ ([0-9]+)% ]]; then
-                      progress="${BASH_REMATCH[2]}"
-                      echo -ne "\r📦 推送进度: ${progress}% "
-                  elif [[ $line =~ digest:\ ([a-zA-Z0-9:]+) ]]; then
-                      echo -e "\n✅ 推送完成: ${BASH_REMATCH[1]}"
-                      push_success=true
-                  fi
-              done; then
-                  # 检查是否成功推送
-                  if [[ $push_success == true ]] || grep -q "digest: sha" "$push_output_file"; then
-                      echo "✅ 镜像推送成功"
-                      # 标记推送成功
-                      touch "$status_file"
-                      # 清理临时文件
-                      rm -f "$push_output_file"
-                      return 0
-                  fi
-              fi
-              
-              # 清理临时文件
-              rm -f "$push_output_file"
-              return 1
-          else
-              # 普通命令执行
-              if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
-                  echo "Debug: 命令输出:"
-                  cat /tmp/output.log
-                  echo "Debug: 错误输出:"
-                  cat /tmp/error.log
-                  retry_count=$((attempt-1))
-                  return 0
-              else
-                  local exit_code=$?
-                  error_msg=$(cat /tmp/error.log)
-                  echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
-                  echo "Debug: 退出代码: $exit_code"
-                  echo "Debug: 命令输出:"
-                  cat /tmp/output.log
-                  echo "Debug: 错误输出:"
-                  cat /tmp/error.log
-                  if [ $attempt -lt $max_attempts ]; then
-                      echo "等待 ${wait_time} 秒后重试..."
-                      sleep $wait_time
-                      wait_time=$((wait_time * 2))
-                  fi
-                  ((attempt++))
-                  return 1
-              fi
-          fi
-        }
-
-        echo "### 🔄 镜像处理进度" >> $GITHUB_STEP_SUMMARY
-        echo "#### 登录状态" >> $GITHUB_STEP_SUMMARY
-        
-        # 使用重试函数进行登录
-        echo "Debug: 尝试登录到阿里云容器镜像服务"
-        if docker login -u "$ALIYUN_REGISTRY_USER" -p "$ALIYUN_REGISTRY_PASSWORD" "$ALIYUN_REGISTRY" > /tmp/login.log 2>&1; then
-          echo "Debug: Docker 登录命令执行结果:"
-          cat /tmp/login.log
-          if grep -q "Login Succeeded" /tmp/login.log; then
-            echo "✅ 阿里云容器镜像服务登录成功" >> $GITHUB_STEP_SUMMARY
-            echo "Debug: 登录成功确认"
-          else
-            echo "❌ 阿里云容器镜像服务登录失败: 未找到成功标记" >> $GITHUB_STEP_SUMMARY
-            echo "Debug: 登录输出不包含成功标记"
-            exit 1
-          fi
-        else
-          echo "❌ 阿里云容器镜像服务登录失败" >> $GITHUB_STEP_SUMMARY
-          echo "Debug: Docker 登录命令失败，退出代码: $?"
-          cat /tmp/login.log
-          echo "ERROR_INFO<<EOF" >> $GITHUB_ENV
-          echo "登录失败，请检查凭据是否正确。错误日志：" >> $GITHUB_ENV
-          cat /tmp/login.log >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          exit 1
-        fi
-        
-        # 初始化错误信息收集
-        errors=()
-        
-        # 初始化镜像信息收集数组
-        declare -a successful_images=()
-        declare -a failed_images_info=()
-        
-        # 创建临时目录用于状态跟踪
-        mkdir -p /tmp/docker_push_status
-        
-        # 检查文件是否存在
-        if [ ! -f "images.txt" ]; then
-            echo "Error: images.txt 文件不存在"
-            exit 1
-        fi
-        
-        # 清理文件格式
-        echo "Debug: 清理文件格式"
-        # 删除空行和Windows换行符
-        sed -i '/^[[:space:]]*$/d' images.txt
-        sed -i 's/\r$//' images.txt
-        
-        # 显示处理后的文件内容
-        echo "Debug: 处理后的文件内容:"
-        cat -n images.txt
-        
-        # 初始化计数器
-        total_images=0
-        processed_images=0
-        failed_images=0
-        
-        # 计算总镜像数（添加错误处理）
-        echo "Debug: 开始计算总镜像数"
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
-            
-            echo "Debug: 处理行: '$line'"
-            
-            # 验证镜像格式（改进的格式验证）
-            if ! echo "$line" | grep -qE '^([a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?:[a-zA-Z0-9._-]+$'; then
-                echo "Error: 无效的镜像格式: '$line'"
-                echo "镜像格式应该是: [registry/][namespace/]name:tag"
-                exit 1
-            fi
-            
-            echo "Debug: 有效的镜像格式: $line"
-            
-            # 在增加计数之前添加调试信息
-            echo "Debug: 当前总数: $total_images"
-            # 修改计数器递增的方式
-            total_images=$((total_images + 1))
-            if [ $? -ne 0 ]; then
-                echo "Error: 计数器递增失败"
-                exit 1
-            fi
-            echo "Debug: 更新后总数: $total_images"
-            
-            # 验证镜像格式解析
-            echo "Debug: 开始解析镜像格式"
-            image_name_tag=$(echo "$line" | awk -F'/' '{print $NF}') || { echo "Error: 解析镜像名称和标签失败"; exit 1; }
-            echo "Debug: 成功解析镜像名称和标签: $image_name_tag"
-            
-            name_space=$(echo "$line" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}') || { echo "Error: 解析命名空间失败"; exit 1; }
-            echo "Debug: 成功解析命名空间: '$name_space'"
-            
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-            echo "Debug: 成功解析镜像名: $image_name"
-            
-            echo "Debug: 镜像解析测试完成:"
-            echo "- 完整镜像: $line"
-            echo "- 镜像名称和标签: $image_name_tag"
-            echo "- 命名空间: $name_space"
-            echo "- 镜像名: $image_name"
-            
-            # 验证解析结果
-            if [ -z "$image_name" ]; then
-                echo "Error: 镜像名为空"
-                exit 1
-            fi
-            if [ -z "$image_name_tag" ]; then
-                echo "Error: 镜像名称和标签为空"
-                exit 1
-            fi
-            
-            echo "Debug: 该行处理完成"
-        done < images.txt || { echo "Error: 文件读取失败"; exit 1; }
-        
-        echo "Debug: 文件读取完成"
-        
-        # 验证总镜像数
-        echo "Debug: 验证总镜像数"
-        if [ $total_images -eq 0 ]; then
-            echo "Error: 未找到有效的镜像配置"
-            exit 1
-        fi
-        
-        echo "Debug: 找到 $total_images 个有效镜像"
-        
-        # 导出初始统计信息到环境变量
-        {
-            echo "build_start_time=${build_start_time}" >> $GITHUB_ENV
-            echo "total_images=${total_images}" >> $GITHUB_ENV
-        }
-        
-        # 添加处理统计到摘要
-        {
-            echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
-            echo "- 待处理镜像总数: ${total_images}" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "#### 🔍 镜像处理详情" >> $GITHUB_STEP_SUMMARY
-            echo "| 序号 | 源镜像 | 目标镜像 | 状态 | 耗时 | 重试次数 |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|--------|-----------|------|------|-----------|" >> $GITHUB_STEP_SUMMARY
-        }
-        
-        # 数据预处理,判断镜像是否重名
-        declare -A duplicate_images
-        declare -A temp_map
-        
-        echo "Debug: 开始预处理镜像名称查重"
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
-            
-            # 获取镜像的完整名称
-            image="$line"  # 直接使用整行作为镜像名称
-            # 将@sha256:等字符删除
-            image="${image%%@*}"
-            echo "Debug: 处理镜像 $image"
-            
-            # 获取镜像名:版本号
-            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            echo "Debug: 镜像名称和标签: $image_name_tag"
-            
-            # 获取命名空间
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            echo "Debug: 命名空间: $name_space"
-            
-            # 这里不要是空值影响判断
-            name_space="${name_space}_"
-            
-            # 获取镜像名
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-            echo "Debug: 镜像名: $image_name"
-            
-            # 如果镜像存在于数组中，则添加到temp_map
-            if [[ -n "${temp_map[$image_name]}" ]]; then
-                # 如果temp_map已经存在镜像名，判断是不是同一命名空间
-                if [[ "${temp_map[$image_name]}" != $name_space ]]; then
-                    echo "Debug: 发现重复镜像名: $image_name"
-                    duplicate_images[$image_name]="true"
-                fi
-            else
-                # 存镜像的命名空间
-                temp_map[$image_name]=$name_space
-                echo "Debug: 添加新镜像到temp_map: $image_name -> $name_space"
-            fi
-        done < images.txt
-        
-        echo "Debug: 开始处理镜像"
-        # 确保变量和数组正确初始化
-        processed_images=0
-        failed_images=0
-        retry_count=0
-        declare -a successful_images=()
-        declare -a failed_images_info=()
-        
-        echo "Debug: 初始化处理变量完成"
-        echo "Debug: 开始镜像处理循环"
-        
-        # 主处理循环
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
-            
-            # 在处理前增加计数
-            current_count=$((processed_images + 1))
-            echo "Debug: 开始处理第 $current_count/$total_images 个镜像"
-            
-            # 解析镜像信息
-            image="$line"
-            image="${image%%@*}"
-            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-            tag=$(echo "$image_name_tag" | awk -F':' '{print $2}')
-            
-            # 构建目标镜像名称
-            new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
-            
-            echo "Debug: 处理镜像: $line"
-            echo "Debug: 目标镜像: $new_image"
-            
-            # 首先检查目标仓库是否已存在该镜像
-            if check_image_exists "$new_image" "$ALIYUN_REGISTRY" "$ALIYUN_NAME_SPACE" "$image_name" "$tag"; then
-                echo "Debug: 镜像已存在，跳过处理"
-                echo "| ${current_count}/${total_images} | \`${image}\` | \`${new_image}\` | ⏭️ | 0s | 0 |" >> $GITHUB_STEP_SUMMARY
-                ((processed_images++))
-                continue
-            fi
-            
-            # 如果镜像不存在，则拉取和推送
-            echo "Debug: 镜像不存在，开始处理"
-            start_time=$(date +%s)
-            
-            if retry_command "docker pull $line"; then
+            # 处理镜像
+            echo "Debug: 开始处理镜像: $line"
+            # 拉取镜像
+            if docker pull "$line"; then
                 echo "Debug: 镜像拉取成功: $line"
-                
-                if retry_command "docker tag $image $new_image && docker push $new_image"; then
-                    end_time=$(date +%s)
-                    duration=$((end_time - start_time))
-                    echo "Debug: 成功推送镜像: $new_image (耗时: ${duration}s)"
-                    echo "| ${current_count}/${total_images} | \`${image}\` | \`${new_image}\` | ✅ | ${duration}s | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
-                    successful_images+=("✅ $new_image (耗时: ${duration}s)")
-                    
-                    # 清理镜像
-                    docker rmi "$image" "$new_image" || true
+                # 推送镜像
+                new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$line"
+                if docker tag "$line" "$new_image" && docker push "$new_image"; then
+                    echo "Debug: 成功推送镜像: $new_image"
                 else
-                    echo "Debug: 镜像推送失败"
-                    ((failed_images++))
-                    errors+=("推送失败: $image -> $new_image")
-                    failed_images_info+=("❌ $image -> $new_image")
-                    echo "| ${current_count}/${total_images} | \`${image}\` | \`${new_image}\` | ❌ | - | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
+                    echo "Debug: 镜像推送失败: $new_image"
                 fi
             else
-                echo "Debug: 镜像拉取失败"
-                ((failed_images++))
-                errors+=("拉取失败: $line")
-                failed_images_info+=("❌ $line")
-                echo "| ${current_count}/${total_images} | \`$line\` | - | ❌ | - | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
+                echo "Debug: 镜像拉取失败: $line"
             fi
-            
-            ((processed_images++))
-            echo "Debug: 检查磁盘空间状态"
-            df -hT
-            
-            echo "Debug: 完成处理镜像: $line"
-            echo "Debug: 当前进度: $processed_images/$total_images"
         done < images.txt
-        
-        echo "Debug: 镜像处理循环完成"
-        echo "Debug: 处理结果统计:"
-        echo "- 总数: $total_images"
-        echo "- 已处理: $processed_images"
-        echo "- 失败: $failed_images"
         
         # 更新最终统计
         build_end_time=$(date +%s)
         total_duration=$((build_end_time - build_start_time))
         
-        # 计算成功率
-        if [ $total_images -gt 0 ]; then
-          success_rate=$(( (processed_images - failed_images) * 100 / total_images ))
-        else
-          success_rate=0
-        fi
-        
         # 导出统计信息到环境变量
         {
-          echo "success_rate=${success_rate}" >> $GITHUB_ENV
           echo "total_duration=${total_duration}" >> $GITHUB_ENV
           echo "processed_images=${processed_images}" >> $GITHUB_ENV
           echo "failed_images=${failed_images}" >> $GITHUB_ENV
-          echo "total_images=${total_images}" >> $GITHUB_ENV
         }
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 📈 最终统计" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ 成功处理: $((processed_images - failed_images)) 个" >> $GITHUB_STEP_SUMMARY
         echo "- ❌ 处理失败: ${failed_images} 个" >> $GITHUB_STEP_SUMMARY
-        echo "- 📊 成功率: ${success_rate}%" >> $GITHUB_STEP_SUMMARY
         echo "- ⏱️ 总耗时: ${total_duration} 秒" >> $GITHUB_STEP_SUMMARY
-        
-        # 如果有错误，记录到环境变量中
-        if [ ${#errors[@]} -gt 0 ]; then
-          echo "ERROR_INFO<<EOF" >> $GITHUB_ENV
-          echo "处理过程中出现以下错误：" >> $GITHUB_ENV
-          printf '%s\n' "${errors[@]}" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-        fi
 
     - name: Build Summary
       if: always()
@@ -618,8 +193,8 @@ jobs:
         
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
-        if [ -n "${{ env.total_images }}" ]; then
-          total="${{ env.total_images }}"
+        if [ -n "${{ env.processed_images }}" ]; then
+          total="${{ env.processed_images }}"
           failed="${{ env.failed_images }}"
           success=$((total - failed))
           
@@ -631,7 +206,6 @@ jobs:
           echo "- 总镜像数: $total 个" >> $GITHUB_STEP_SUMMARY
           echo "- 成功数量: $success 个" >> $GITHUB_STEP_SUMMARY
           echo "- 失败数量: $failed 个" >> $GITHUB_STEP_SUMMARY
-          echo "- 成功率: ${{ env.success_rate }}%" >> $GITHUB_STEP_SUMMARY
         else
           echo "- ⚠️ 无可用统计信息" >> $GITHUB_STEP_SUMMARY
         fi
@@ -662,13 +236,12 @@ jobs:
             <li>👤 提交者：${{ github.actor }}</li>
             <li>⏰ 开始时间：$(date -d @${{ env.build_start_time }} '+%Y-%m-%d %H:%M:%S')</li>
             <li>⌛ 总耗时：${{ env.total_duration }} 秒</li>
-            <li>📈 成功率：${{ env.success_rate }}%</li>
           </ul>
 
           <h3>📊 处理统计</h3>
           <ul>
-            <li>总镜像数：${{ env.total_images }} 个</li>
-            <li>成功处理：$((${{ env.total_images }} - ${{ env.failed_images }})) 个</li>
+            <li>总镜像数：${{ env.processed_images }} 个</li>
+            <li>成功处理：$((${{ env.processed_images }} - ${{ env.failed_images }})) 个</li>
             <li>处理失败：${{ env.failed_images }} 个</li>
           </ul>
 
