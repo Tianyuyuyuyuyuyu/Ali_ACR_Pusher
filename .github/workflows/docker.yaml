@@ -213,11 +213,15 @@ jobs:
             if echo "$line" | grep -q '^\s*#'; then
                 continue
             fi
-            # 验证镜像格式
-            if ! echo "$line" | grep -q '^[^:]\+:[^:]\+$' && ! echo "$line" | grep -q '^[^/]\+/[^:]\+:[^:]\+$'; then
-                echo "Error: 无效的镜像格式: $line"
+            
+            # 验证镜像格式（改进的格式验证）
+            if ! echo "$line" | grep -qE '^([a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?:[a-zA-Z0-9._-]+$'; then
+                echo "Error: 无效的镜像格式: '$line'"
+                echo "镜像格式应该是: [registry/][namespace/]name:tag"
                 exit 1
             fi
+            
+            echo "Debug: 有效的镜像格式: $line"
             ((total_images++))
         done < images.txt
         
