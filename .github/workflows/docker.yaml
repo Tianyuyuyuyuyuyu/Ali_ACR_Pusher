@@ -214,6 +214,8 @@ jobs:
                 continue
             fi
             
+            echo "Debug: 处理行: '$line'"
+            
             # 验证镜像格式（改进的格式验证）
             if ! echo "$line" | grep -qE '^([a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?:[a-zA-Z0-9._-]+$'; then
                 echo "Error: 无效的镜像格式: '$line'"
@@ -222,21 +224,46 @@ jobs:
             fi
             
             echo "Debug: 有效的镜像格式: $line"
-            ((total_images++))
+            
+            # 在增加计数之前添加调试信息
+            echo "Debug: 当前总数: $total_images"
+            ((total_images++)) || { echo "Error: 计数器递增失败"; exit 1; }
+            echo "Debug: 更新后总数: $total_images"
             
             # 验证镜像格式解析
-            image_name_tag=$(echo "$line" | awk -F'/' '{print $NF}')
-            name_space=$(echo "$line" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
+            echo "Debug: 开始解析镜像格式"
+            image_name_tag=$(echo "$line" | awk -F'/' '{print $NF}') || { echo "Error: 解析镜像名称和标签失败"; exit 1; }
+            echo "Debug: 成功解析镜像名称和标签: $image_name_tag"
             
-            echo "Debug: 镜像解析测试:"
+            name_space=$(echo "$line" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}') || { echo "Error: 解析命名空间失败"; exit 1; }
+            echo "Debug: 成功解析命名空间: '$name_space'"
+            
+            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}') || { echo "Error: 解析镜像名失败"; exit 1; }
+            echo "Debug: 成功解析镜像名: $image_name"
+            
+            echo "Debug: 镜像解析测试完成:"
             echo "- 完整镜像: $line"
             echo "- 镜像名称和标签: $image_name_tag"
             echo "- 命名空间: $name_space"
             echo "- 镜像名: $image_name"
-        done < images.txt
+            
+            # 验证解析结果
+            if [ -z "$image_name" ]; then
+                echo "Error: 镜像名为空"
+                exit 1
+            fi
+            if [ -z "$image_name_tag" ]; then
+                echo "Error: 镜像名称和标签为空"
+                exit 1
+            fi
+            
+            echo "Debug: 该行处理完成"
+        done < images.txt || { echo "Error: 文件读取失败"; exit 1; }
+        
+        echo "Debug: 文件读取完成"
         
         # 验证总镜像数
+        echo "Debug: 验证总镜像数"
         if [ $total_images -eq 0 ]; then
             echo "Error: 未找到有效的镜像配置"
             exit 1
