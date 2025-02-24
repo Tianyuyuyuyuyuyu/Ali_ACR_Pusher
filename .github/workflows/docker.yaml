@@ -465,10 +465,17 @@ jobs:
         echo "Debug: 初始化处理变量完成"
         echo "Debug: 开始镜像处理循环"
         
-        # 处理单个镜像的函数
-        process_image() {
-            local line="$1"
-            local start_time=$(date +%s)
+        # 主处理循环
+        while IFS= read -r line || [ -n "$line" ]; do
+            # 忽略空行与注释
+            [[ -z "$line" ]] && continue
+            if echo "$line" | grep -q '^\s*#'; then
+                continue
+            fi
+            
+            # 在处理前增加计数
+            current_count=$((processed_images + 1))
+            echo "Debug: 开始处理第 $current_count/$total_images 个镜像"
             
             # 解析镜像信息
             local image="$line"
@@ -478,68 +485,57 @@ jobs:
             local image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
             local tag=$(echo "$image_name_tag" | awk -F':' '{print $2}')
             
-            # 处理命名空间前缀
-            local name_space_prefix=""
-            if [[ -n "${duplicate_images[$image_name]}" ]]; then
-                echo "Debug: 检测到重复镜像名: $image_name"
-                if [[ -n "${name_space}" ]]; then
-                    name_space_prefix="${name_space}_"
-                    echo "Debug: 添加命名空间前缀: $name_space_prefix"
-                fi
-            fi
-            
             # 构建目标镜像名称
-            local new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/${name_space_prefix}${image_name_tag}"
+            local new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
             
             echo "Debug: 处理镜像: $line"
             echo "Debug: 目标镜像: $new_image"
             
             # 首先检查目标仓库是否已存在该镜像
-            if check_image_exists "$new_image" "$ALIYUN_REGISTRY" "$ALIYUN_NAME_SPACE" "${name_space_prefix}${image_name}" "$tag"; then
+            if check_image_exists "$new_image" "$ALIYUN_REGISTRY" "$ALIYUN_NAME_SPACE" "$image_name" "$tag"; then
                 echo "Debug: 镜像已存在，跳过处理"
-                echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ⏭️ | 0s | 0 |" >> $GITHUB_STEP_SUMMARY
-                return 0
+                echo "| ${current_count}/${total_images} | \`${image}\` | \`${new_image}\` | ⏭️ | 0s | 0 |" >> $GITHUB_STEP_SUMMARY
+                ((processed_images++))
+                continue
             fi
             
             # 如果镜像不存在，则拉取和推送
             echo "Debug: 镜像不存在，开始处理"
+            start_time=$(date +%s)
+            
             if retry_command "docker pull $line"; then
                 echo "Debug: 镜像拉取成功: $line"
                 
                 if retry_command "docker tag $image $new_image && docker push $new_image"; then
-                    local end_time=$(date +%s)
-                    local duration=$((end_time - start_time))
+                    end_time=$(date +%s)
+                    duration=$((end_time - start_time))
                     echo "Debug: 成功推送镜像: $new_image (耗时: ${duration}s)"
-                    echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ✅ | ${duration}s | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
+                    echo "| ${current_count}/${total_images} | \`${image}\` | \`${new_image}\` | ✅ | ${duration}s | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
                     successful_images+=("✅ $new_image (耗时: ${duration}s)")
                     
                     # 清理镜像
                     docker rmi "$image" "$new_image" || true
-                    return 0
+                else
+                    echo "Debug: 镜像推送失败"
+                    ((failed_images++))
+                    errors+=("推送失败: $image -> $new_image")
+                    failed_images_info+=("❌ $image -> $new_image")
+                    echo "| ${current_count}/${total_images} | \`${image}\` | \`${new_image}\` | ❌ | - | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
                 fi
-            fi
-            
-            # 如果处理失败
-            ((failed_images++))
-            errors+=("处理失败: $image -> $new_image")
-            failed_images_info+=("❌ $image -> $new_image")
-            echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ❌ | - | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
-            return 1
-        }
-
-        # 主处理循环
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
+            else
+                echo "Debug: 镜像拉取失败"
+                ((failed_images++))
+                errors+=("拉取失败: $line")
+                failed_images_info+=("❌ $line")
+                echo "| ${current_count}/${total_images} | \`$line\` | - | ❌ | - | ${retry_count} |" >> $GITHUB_STEP_SUMMARY
             fi
             
             ((processed_images++))
-            process_image "$line" || true  # 添加 || true 防止失败时退出
-            
             echo "Debug: 检查磁盘空间状态"
             df -hT
+            
+            echo "Debug: 完成处理镜像: $line"
+            echo "Debug: 当前进度: $processed_images/$total_images"
         done < images.txt
         
         echo "Debug: 镜像处理循环完成"
