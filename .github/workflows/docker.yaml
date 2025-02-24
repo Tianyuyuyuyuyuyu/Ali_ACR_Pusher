@@ -147,18 +147,40 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
             
-            # 如果是推送命令，使用 pv 显示进度
+            # 如果是推送命令，显示进度
             if [[ $cmd == *"docker push"* ]]; then
-              echo "🔄 开始推送镜像..."
-              # 使用管道显示进度
-              eval "$cmd 2>&1" | while IFS= read -r line; do
-                echo "📦 $line"
-                # 提取进度信息并更新到 GITHUB_STEP_SUMMARY
-                if [[ $line =~ ^[0-9a-f]+:\ Push\ progress:\ ([0-9]+)% ]]; then
-                  progress="${BASH_REMATCH[1]}"
-                  echo "### 🚀 推送进度：${progress}%" >> $GITHUB_STEP_SUMMARY
-                fi
-              done
+                echo "🔄 开始推送镜像..."
+                # 使用管道显示进度
+                eval "$cmd 2>&1" | while IFS= read -r line; do
+                    # 显示每一行输出
+                    echo "$line"
+                    
+                    # 解析进度信息
+                    if [[ $line =~ ^[0-9a-f]+:\ Push\ progress:\ ([0-9]+)% ]]; then
+                        progress="${BASH_REMATCH[1]}"
+                        # 创建进度条
+                        bar=""
+                        bar_size=50
+                        filled=$((progress * bar_size / 100))
+                        empty=$((bar_size - filled))
+                        
+                        # 构建进度条
+                        for ((i=0; i<filled; i++)); do bar+="█"; done
+                        for ((i=0; i<empty; i++)); do bar+="░"; done
+                        
+                        # 清除当前行并显示进度
+                        echo -ne "\r📦 推送进度: [${bar}] ${progress}%"
+                        
+                        # 更新到GitHub Actions摘要
+                        {
+                            echo "### 🚀 当前推送进度" >> $GITHUB_STEP_SUMMARY
+                            echo "![Progress](https://progress-bar.dev/${progress}/?width=500)" >> $GITHUB_STEP_SUMMARY
+                            echo "- 已完成: ${progress}%" >> $GITHUB_STEP_SUMMARY
+                            echo "- 当前层: ${line%%:*}" >> $GITHUB_STEP_SUMMARY
+                        }
+                    fi
+                done
+                echo # 添加换行
             else
               # 普通命令执行
               if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
