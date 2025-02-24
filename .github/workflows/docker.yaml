@@ -478,14 +478,24 @@ jobs:
             local image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
             local tag=$(echo "$image_name_tag" | awk -F':' '{print $2}')
             
+            # 处理命名空间前缀
+            local name_space_prefix=""
+            if [[ -n "${duplicate_images[$image_name]}" ]]; then
+                echo "Debug: 检测到重复镜像名: $image_name"
+                if [[ -n "${name_space}" ]]; then
+                    name_space_prefix="${name_space}_"
+                    echo "Debug: 添加命名空间前缀: $name_space_prefix"
+                fi
+            fi
+            
             # 构建目标镜像名称
-            local new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
+            local new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/${name_space_prefix}${image_name_tag}"
             
             echo "Debug: 处理镜像: $line"
             echo "Debug: 目标镜像: $new_image"
             
             # 首先检查目标仓库是否已存在该镜像
-            if check_image_exists "$new_image" "$ALIYUN_REGISTRY" "$ALIYUN_NAME_SPACE" "$image_name" "$tag"; then
+            if check_image_exists "$new_image" "$ALIYUN_REGISTRY" "$ALIYUN_NAME_SPACE" "${name_space_prefix}${image_name}" "$tag"; then
                 echo "Debug: 镜像已存在，跳过处理"
                 echo "| ${processed_images}/${total_images} | \`${image}\` | \`${new_image}\` | ⏭️ | 0s | 0 |" >> $GITHUB_STEP_SUMMARY
                 return 0
@@ -526,7 +536,7 @@ jobs:
             fi
             
             ((processed_images++))
-            process_image "$line"
+            process_image "$line" || true  # 添加 || true 防止失败时退出
             
             echo "Debug: 检查磁盘空间状态"
             df -hT
