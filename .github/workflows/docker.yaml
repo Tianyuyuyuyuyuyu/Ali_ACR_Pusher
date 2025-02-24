@@ -190,6 +190,39 @@ jobs:
         # 修改文件读取逻辑
         echo "Debug: 开始读取镜像列表"
         
+        # 初始化计数器
+        total_images=0
+        processed_images=0
+        failed_images=0
+        
+        # 计算总镜像数
+        while IFS= read -r line || [ -n "$line" ]; do
+            # 忽略空行与注释
+            [[ -z "$line" ]] && continue
+            if echo "$line" | grep -q '^\s*#'; then
+                continue
+            fi
+            ((total_images++))
+        done < images.txt
+        
+        echo "Debug: 总镜像数: $total_images"
+        
+        # 导出初始统计信息到环境变量
+        {
+            echo "build_start_time=${build_start_time}" >> $GITHUB_ENV
+            echo "total_images=${total_images}" >> $GITHUB_ENV
+        }
+        
+        # 添加处理统计到摘要
+        {
+            echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
+            echo "- 待处理镜像总数: ${total_images}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 🔍 镜像处理详情" >> $GITHUB_STEP_SUMMARY
+            echo "| 序号 | 源镜像 | 目标镜像 | 状态 | 耗时 | 重试次数 |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|--------|-----------|------|------|-----------|" >> $GITHUB_STEP_SUMMARY
+        }
+        
         # 数据预处理,判断镜像是否重名
         declare -A duplicate_images
         declare -A temp_map
