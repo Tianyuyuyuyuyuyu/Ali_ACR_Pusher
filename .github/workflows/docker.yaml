@@ -172,12 +172,18 @@ jobs:
           (
             set +e  # 禁用错误立即退出
 
+            # 提取镜像名称和标签
+            image_name_tag="$(echo "$line" | awk -F ':' '{print $1}')"
+            tag="$(echo "$line" | awk -F ':' '{print $2}')"
+            if [ -n "$tag" ]; then
+              new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag:$tag"
+            else
+              new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
+            fi
+
             # 直接拉取镜像
             if retry_command "docker pull $line"; then
               echo "Debug: 镜像拉取成功: $line"
-
-              # 构建目标镜像名称
-              new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$image_name_tag"
 
               if retry_command "docker tag $image $new_image && docker push $new_image"; then
                 end_time=$(date +%s)
