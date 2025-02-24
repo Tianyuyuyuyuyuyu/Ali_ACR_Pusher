@@ -145,23 +145,44 @@ jobs:
             echo "Debug: 仓库信息: $registry/$namespace/$repository:$tag"
             
             # 构建认证字符串
-            local auth_header="Basic $(echo -n "${ALIYUN_REGISTRY_USER}:${ALIYUN_REGISTRY_PASSWORD}" | base64)"
+            local auth_str="${ALIYUN_REGISTRY_USER}:${ALIYUN_REGISTRY_PASSWORD}"
+            local auth_header="Basic $(echo -n "$auth_str" | base64 -w 0)"
             
             # 使用阿里云容器镜像服务API检查镜像是否存在
             local check_result
             check_result=$(curl -s -X GET \
                 -H "Content-Type: application/json" \
-                -H "Authorization: ${auth_header}" \
-                "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}" 2>&1)
+                -H "Authorization: $auth_header" \
+                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}")
             
             echo "Debug: API响应: $check_result"
             
             # 检查响应状态和内容
-            if echo "$check_result" | grep -q "digest"; then
+            if echo "$check_result" | grep -q "schemaVersion"; then
                 echo "Debug: 镜像已存在，跳过处理"
                 return 0
+            elif echo "$check_result" | grep -q "MANIFEST_UNKNOWN"; then
+                echo "Debug: 镜像不存在，需要处理"
+                return 1
+            elif echo "$check_result" | grep -q "UNAUTHORIZED"; then
+                echo "Debug: 认证失败，重试登录"
+                if docker login -u "$ALIYUN_REGISTRY_USER" -p "$ALIYUN_REGISTRY_PASSWORD" "$registry"; then
+                    echo "Debug: 重新登录成功，重试检查"
+                    check_result=$(curl -s -X GET \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: $auth_header" \
+                        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                        "https://${registry}/v2/${namespace}/${repository}/manifests/${tag}")
+                    if echo "$check_result" | grep -q "schemaVersion"; then
+                        echo "Debug: 重试后确认镜像存在"
+                        return 0
+                    fi
+                fi
+                echo "Debug: 认证问题未解决，继续处理"
+                return 1
             else
-                echo "Debug: 镜像不存在或检查失败，需要处理"
+                echo "Debug: 检查失败，继续处理"
                 return 1
             fi
         }
