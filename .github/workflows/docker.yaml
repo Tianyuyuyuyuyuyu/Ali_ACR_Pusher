@@ -92,6 +92,15 @@ jobs:
     - name: Build and push image Aliyun
       id: build_push
       run: |
+        # 添加调试信息
+        echo "Debug: 显示 images.txt 内容"
+        cat images.txt
+        echo "Debug: 显示文件编码"
+        file images.txt
+        
+        # 确保文件使用 Unix 换行符
+        dos2unix images.txt || true
+        
         # 定义重试函数
         retry_command() {
           local cmd="$1"
@@ -101,12 +110,15 @@ jobs:
           local error_msg=""
           local retry_count=0
           
+          echo "Debug: 执行命令: $cmd"
+          
           while [ $attempt -le $max_attempts ]; do
             echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
-            if eval "$cmd" 2> >(error_msg=$(cat)); then
+            if eval "$cmd" 2> >(tee /tmp/error.log >&2); then
               retry_count=$((attempt-1))
               return 0
             else
+              error_msg=$(cat /tmp/error.log)
               echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
               echo "错误信息: $error_msg"
               if [ $attempt -lt $max_attempts ]; then
@@ -145,18 +157,19 @@ jobs:
         declare -a successful_images=()
         declare -a failed_images_info=()
         
-        # 初始化计数器和开始时间
+        # 修改文件读取逻辑
+        echo "Debug: 开始读取镜像列表"
         total_images=0
-        processed_images=0
-        failed_images=0
-        build_start_time=$(date +%s)
-        
-        # 计算总镜像数
         while IFS= read -r line || [ -n "$line" ]; do
+          # 去除行尾的回车符
+          line=$(echo "$line" | tr -d '\r')
           if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
+            echo "Debug: 发现有效镜像行: $line"
             ((total_images++))
           fi
         done < images.txt
+        
+        echo "Debug: 总镜像数: $total_images"
         
         # 导出构建开始时间到环境变量
         echo "build_start_time=${build_start_time}" >> $GITHUB_ENV
