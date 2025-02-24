@@ -190,19 +190,41 @@ jobs:
         # 修改文件读取逻辑
         echo "Debug: 开始读取镜像列表"
         total_images=0
+        
+        # 检查文件是否存在
+        if [ ! -f "images.txt" ]; then
+          echo "Error: images.txt 文件不存在"
+          exit 1
+        fi
+        
+        # 显示文件内容和行数
+        echo "Debug: 文件完整内容:"
+        cat -n images.txt
+        
+        echo "Debug: 开始计算有效镜像数量"
         while IFS= read -r line || [ -n "$line" ]; do
           # 去除行尾的回车符和空白字符
           line=$(echo "$line" | tr -d '\r' | xargs)
+          echo "Debug: 处理行: '$line'"
           if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
-            echo "Debug: 发现有效镜像行: $line"
+            echo "Debug: 发现有效镜像行: '$line'"
             ((total_images++))
+          else
+            echo "Debug: 跳过注释或空行: '$line'"
           fi
         done < images.txt
         
         echo "Debug: 总镜像数: $total_images"
         
+        # 检查是否找到有效镜像
+        if [ $total_images -eq 0 ]; then
+          echo "Error: 未找到有效的镜像配置"
+          exit 1
+        fi
+        
         # 导出构建开始时间到环境变量
         echo "build_start_time=${build_start_time}" >> $GITHUB_ENV
+        echo "total_images=${total_images}" >> $GITHUB_ENV
         
         echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
         echo "- 待处理镜像总数: ${total_images}" >> $GITHUB_STEP_SUMMARY
@@ -216,6 +238,8 @@ jobs:
         while IFS= read -r line || [ -n "$line" ]; do
           # 去除行尾的回车符和空白字符
           line=$(echo "$line" | tr -d '\r' | xargs)
+          echo "Debug: 正在处理行: '$line'"
+          
           if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
             ((processed_images++))
             start_time=$(date +%s)
@@ -223,12 +247,14 @@ jobs:
             # 提取镜像名称，处理可能的平台参数
             if [[ "$line" =~ --platform ]]; then
               image=$(echo "$line" | awk '{print $NF}')
+              echo "Debug: 检测到平台参数，提取镜像名称: $image"
             else
               image="$line"
+              echo "Debug: 直接使用镜像名称: $image"
             fi
             image="${image%%@*}"
             
-            echo "Debug: 处理镜像: $image"
+            echo "Debug: 最终处理的镜像名称: $image"
             echo "::group::处理镜像 ($processed_images/$total_images): $image"
             
             # 使用重试函数拉取镜像
