@@ -104,9 +104,6 @@ jobs:
         echo "Debug: 显示文件编码"
         file images.txt
         
-        # 使用 sed 处理换行符而不是 dos2unix
-        sed -i 's/\r$//' images.txt
-        
         # 定义重试函数
         retry_command() {
           local cmd="$1"
@@ -187,25 +184,50 @@ jobs:
         declare -a successful_images=()
         declare -a failed_images_info=()
         
-        # 修改文件读取逻辑
-        echo "Debug: 开始读取镜像列表"
+        # 检查文件是否存在
+        if [ ! -f "images.txt" ]; then
+            echo "Error: images.txt 文件不存在"
+            exit 1
+        fi
+        
+        # 清理文件格式
+        echo "Debug: 清理文件格式"
+        # 删除空行和Windows换行符
+        sed -i '/^[[:space:]]*$/d' images.txt
+        sed -i 's/\r$//' images.txt
+        
+        # 显示处理后的文件内容
+        echo "Debug: 处理后的文件内容:"
+        cat -n images.txt
         
         # 初始化计数器
         total_images=0
         processed_images=0
         failed_images=0
         
-        # 计算总镜像数
+        # 计算总镜像数（添加错误处理）
+        echo "Debug: 开始计算总镜像数"
         while IFS= read -r line || [ -n "$line" ]; do
             # 忽略空行与注释
             [[ -z "$line" ]] && continue
             if echo "$line" | grep -q '^\s*#'; then
                 continue
             fi
+            # 验证镜像格式
+            if ! echo "$line" | grep -q '^[^:]\+:[^:]\+$' && ! echo "$line" | grep -q '^[^/]\+/[^:]\+:[^:]\+$'; then
+                echo "Error: 无效的镜像格式: $line"
+                exit 1
+            fi
             ((total_images++))
         done < images.txt
         
-        echo "Debug: 总镜像数: $total_images"
+        # 验证总镜像数
+        if [ $total_images -eq 0 ]; then
+            echo "Error: 未找到有效的镜像配置"
+            exit 1
+        fi
+        
+        echo "Debug: 找到 $total_images 个有效镜像"
         
         # 导出初始统计信息到环境变量
         {
