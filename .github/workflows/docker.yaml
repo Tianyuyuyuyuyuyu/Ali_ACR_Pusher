@@ -167,7 +167,7 @@ jobs:
                 push_output_file=$(mktemp)
                 
                 # 执行推送命令并保存输出
-                if eval "$cmd" 2>&1 | tee "$push_output_file" | while IFS= read -r line; do
+                eval "$cmd" 2>&1 | tee "$push_output_file" | while IFS= read -r line; do
                     # 只处理包含进度信息的行
                     if [[ $line =~ ^[0-9a-f]+:\ (Push|Layer)\ progress:\ ([0-9]+)% ]]; then
                         progress="${BASH_REMATCH[2]}"
@@ -195,30 +195,31 @@ jobs:
                 rm -f "$push_output_file"
                 return 1
             else
-              # 普通命令执行
-              if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
-                echo "Debug: 命令输出:"
-                cat /tmp/output.log
-                echo "Debug: 错误输出:"
-                cat /tmp/error.log
-                retry_count=$((attempt-1))
-                return 0
-              else
-                local exit_code=$?
-                error_msg=$(cat /tmp/error.log)
-                echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
-                echo "Debug: 退出代码: $exit_code"
-                echo "Debug: 命令输出:"
-                cat /tmp/output.log
-                echo "Debug: 错误输出:"
-                cat /tmp/error.log
-                if [ $attempt -lt $max_attempts ]; then
-                  echo "等待 ${wait_time} 秒后重试..."
-                  sleep $wait_time
-                  wait_time=$((wait_time * 2))
+                # 普通命令执行
+                if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
+                    echo "Debug: 命令输出:"
+                    cat /tmp/output.log
+                    echo "Debug: 错误输出:"
+                    cat /tmp/error.log
+                    retry_count=$((attempt-1))
+                    return 0
+                else
+                    local exit_code=$?
+                    error_msg=$(cat /tmp/error.log)
+                    echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
+                    echo "Debug: 退出代码: $exit_code"
+                    echo "Debug: 命令输出:"
+                    cat /tmp/output.log
+                    echo "Debug: 错误输出:"
+                    cat /tmp/error.log
+                    if [ $attempt -lt $max_attempts ]; then
+                        echo "等待 ${wait_time} 秒后重试..."
+                        sleep $wait_time
+                        wait_time=$((wait_time * 2))
+                    fi
+                    ((attempt++))
+                    return 1
                 fi
-                ((attempt++))
-              fi
             fi
           done
           
