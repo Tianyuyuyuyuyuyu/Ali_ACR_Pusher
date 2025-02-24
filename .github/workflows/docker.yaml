@@ -104,6 +104,28 @@ jobs:
         echo "Debug: 显示文件编码"
         file images.txt
         
+        # 在docker login之后，拉取镜像之前添加：
+        echo "### 🚀 配置构建优化" >> $GITHUB_STEP_SUMMARY
+        echo "- 启用 BuildKit" >> $GITHUB_STEP_SUMMARY
+        echo "- 配置并行下载" >> $GITHUB_STEP_SUMMARY
+        echo "- 启用镜像层缓存" >> $GITHUB_STEP_SUMMARY
+
+        # 设置 Docker 配置
+        cat > /etc/docker/daemon.json <<EOF
+        {
+            "experimental": true,
+            "max-concurrent-downloads": 10,
+            "max-concurrent-uploads": 10
+        }
+        EOF
+
+        # 重启 Docker 使配置生效
+        sudo systemctl restart docker
+
+        # 设置环境变量
+        export DOCKER_BUILDKIT=1
+        export DOCKER_CLI_EXPERIMENTAL=enabled
+        
         # 定义重试函数
         retry_command() {
           local cmd="$1"
@@ -117,30 +139,44 @@ jobs:
           
           while [ $attempt -le $max_attempts ]; do
             echo "::notice::尝试执行命令 (第 $attempt 次): $cmd"
-            # 将命令输出保存到临时文件
-            if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
-              # 即使命令成功，也输出日志用于调试
-              echo "Debug: 命令输出:"
-              cat /tmp/output.log
-              echo "Debug: 错误输出:"
-              cat /tmp/error.log
-              retry_count=$((attempt-1))
-              return 0
+            
+            # 如果是推送命令，使用 pv 显示进度
+            if [[ $cmd == *"docker push"* ]]; then
+              echo "🔄 开始推送镜像..."
+              # 使用管道显示进度
+              eval "$cmd 2>&1" | while IFS= read -r line; do
+                echo "📦 $line"
+                # 提取进度信息并更新到 GITHUB_STEP_SUMMARY
+                if [[ $line =~ ^[0-9a-f]+:\ Push\ progress:\ ([0-9]+)% ]]; then
+                  progress="${BASH_REMATCH[1]}"
+                  echo "### 🚀 推送进度：${progress}%" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
             else
-              local exit_code=$?
-              error_msg=$(cat /tmp/error.log)
-              echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
-              echo "Debug: 退出代码: $exit_code"
-              echo "Debug: 命令输出:"
-              cat /tmp/output.log
-              echo "Debug: 错误输出:"
-              cat /tmp/error.log
-              if [ $attempt -lt $max_attempts ]; then
-                echo "等待 ${wait_time} 秒后重试..."
-                sleep $wait_time
-                wait_time=$((wait_time * 2))
+              # 普通命令执行
+              if eval "$cmd" > /tmp/output.log 2> /tmp/error.log; then
+                echo "Debug: 命令输出:"
+                cat /tmp/output.log
+                echo "Debug: 错误输出:"
+                cat /tmp/error.log
+                retry_count=$((attempt-1))
+                return 0
+              else
+                local exit_code=$?
+                error_msg=$(cat /tmp/error.log)
+                echo "::warning::命令执行失败 (尝试 $attempt/$max_attempts)"
+                echo "Debug: 退出代码: $exit_code"
+                echo "Debug: 命令输出:"
+                cat /tmp/output.log
+                echo "Debug: 错误输出:"
+                cat /tmp/error.log
+                if [ $attempt -lt $max_attempts ]; then
+                  echo "等待 ${wait_time} 秒后重试..."
+                  sleep $wait_time
+                  wait_time=$((wait_time * 2))
+                fi
+                ((attempt++))
               fi
-              ((attempt++))
             fi
           done
           

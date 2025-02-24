@@ -1,6 +1,3 @@
-# Jenkins 基础镜像 - LTS 版本，包含 JDK 11
-jenkins/jenkins:2.426.1-lts-jdk11
-
 # Unity 构建环境 - Unity CI 6000.0.39f1 Linux构建镜像
 unityci/editor:6000.0.39f1-linux-il2cpp-3.1.0
 
