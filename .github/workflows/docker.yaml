@@ -479,9 +479,18 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "#### 📊 处理统计" >> $GITHUB_STEP_SUMMARY
         if [ -n "${{ env.total_images }}" ]; then
-          echo "- 总镜像数: ${{ env.total_images }} 个" >> $GITHUB_STEP_SUMMARY
-          echo "- 成功数量: $((${{ env.total_images }} - ${{ env.failed_images }})) 个" >> $GITHUB_STEP_SUMMARY
-          echo "- 失败数量: ${{ env.failed_images }} 个" >> $GITHUB_STEP_SUMMARY
+          total="${{ env.total_images }}"
+          failed="${{ env.failed_images }}"
+          success=$((total - failed))
+          
+          echo "Debug: 计算统计信息"
+          echo "- 总数: $total"
+          echo "- 失败: $failed"
+          echo "- 成功: $success"
+          
+          echo "- 总镜像数: $total 个" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功数量: $success 个" >> $GITHUB_STEP_SUMMARY
+          echo "- 失败数量: $failed 个" >> $GITHUB_STEP_SUMMARY
           echo "- 成功率: ${{ env.success_rate }}%" >> $GITHUB_STEP_SUMMARY
         else
           echo "- ⚠️ 无可用统计信息" >> $GITHUB_STEP_SUMMARY
