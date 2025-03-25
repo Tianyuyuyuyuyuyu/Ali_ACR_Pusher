@@ -7,11 +7,5 @@ node:20.11.1-alpine
 # 代码质量分析 - SonarQube 社区版
 sonarqube:9.9.4-community
 
-# 测试环境
-# .NET SDK - 用于运行测试和构建
-mcr.microsoft.com/dotnet/sdk:8.0-jammy
-# NUnit Console Runner - 用于执行测试
-mcr.microsoft.com/dotnet/runtime:8.0-jammy
-
 # Drone
 drone/drone:2.16.0
