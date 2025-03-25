@@ -14,4 +14,4 @@ mcr.microsoft.com/dotnet/sdk:8.0-jammy
 mcr.microsoft.com/dotnet/runtime:8.0-jammy
 
 # Drone
-drone:2.16.0
+drone/drone:2.16.0
