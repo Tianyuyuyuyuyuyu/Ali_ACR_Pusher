@@ -8,4 +8,4 @@ node:20.11.1-alpine
 sonarqube:9.9.4-community
 
 # Drone
-drone/drone:2.16.0
+drone:2.26.0
